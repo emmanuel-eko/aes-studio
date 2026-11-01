@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Rapport technique — AES Studio</title>
+  <style>
+    @page { size: A4; margin: 18mm 16mm; }
+    body { font-family: "IBM Plex Sans", "Helvetica Neue", sans-serif; color: #1a1814; font-size: 11.5pt; line-height: 1.45; }
+    h1 { font-family: Georgia, serif; font-size: 26pt; margin-bottom: 0.2em; }
+    h2 { font-family: Georgia, serif; font-size: 16pt; margin-top: 1.6em; border-top: 1px solid #c4bcae; padding-top: 0.6em; }
+    h3 { font-size: 12.5pt; margin-top: 1.1em; }
+    table { border-collapse: collapse; width: 100%; margin: 0.8em 0; font-size: 10.5pt; }
+    th, td { border: 1px solid #c4bcae; padding: 4px 6px; text-align: left; vertical-align: top; }
+    th { background: #e8e2d4; }
+    code, pre { font-family: "IBM Plex Mono", Menlo, monospace; font-size: 9.5pt; }
+    pre { background: #f3efe6; padding: 8px; white-space: pre-wrap; }
+    img { max-width: 100%; border: 1px solid #c4bcae; margin: 8px 0; }
+    .meta { color: #5a554c; font-size: 10pt; }
+  </style>
+</head>
+<body>
+  <h1>Rapport technique — AES Studio</h1>
+  <p class="meta">31 octobre 2026, Africa/Douala (UTC+1). Captures et tests réellement exécutés.</p>
+  <p>AES Studio est une application pédagogique : AES-128, CBC, CTR et GCM sont calculés en Python, sans bibliothèque AES. L’interface React rejoue la trace. Ce n’est pas une implémentation de production.</p>
+
+  <h2>1. Objectif et périmètre</h2>
+  <p>Alice chiffre, Oscar peut modifier le canal, Bob déchiffre. Un seul mode à la fois. Les valeurs affichées viennent du backend.</p>
+  <table>
+    <tr><th>Fonction</th><th>État</th></tr>
+    <tr><td>AES-128 maison, CBC, CTR, GCM, GHASH</td><td>Terminé</td></tr>
+    <tr><td>Studio Alice / Bob / Oscar, traces, 7 représentations</td><td>Terminé</td></tr>
+    <tr><td>Bibliothèque Python + ZIP, glossaire</td><td>Terminé</td></tr>
+    <tr><td>API FastAPI, Docker, 50 tests pytest</td><td>Terminé</td></tr>
+    <tr><td>Suite e2e versionnée</td><td>Non livrée (Chrome headless hors dépôt)</td></tr>
+    <tr><td>Nonce GCM ≠ 96 bits</td><td>Non implémenté (démo standard)</td></tr>
+  </table>
+
+  <h2>2. Architecture</h2>
+  <p>Vite (43123) → <code>/api</code> → FastAPI (48180) → <code>app/cryptography</code>. Trace pré-calculée : le pas arrière ne recalcule pas AES. Aléatoire : <code>secrets.token_bytes</code>.</p>
+
+  <h2>3. Cryptographie</h2>
+  <p>S-Box générée (inverse GF(2^8) + affine). Expansion de clé RotWord/SubWord/Rcon. CBC + PKCS#7. CTR sans padding. GCM : H = AES(0), J0 = nonce∥1, GHASH, tag obligatoire avant le clair. Réutilisation (clé, nonce) refusée.</p>
+
+  <h2>4. Interface</h2>
+  <p>Studio, Bibliothèque, Notions. Direction éditoriale (papier, Fraunces, IBM Plex). Oscar utilise le portrait d’Alice.</p>
+  <p>Studio initial</p>
+  <img src="screenshots/01-studio-initial.png" alt="Studio initial" />
+  <p>CBC après chiffrement réel</p>
+  <img src="screenshots/02-after-encrypt-click.png" alt="CBC chiffré" />
+  <p>Bob a retrouvé le clair</p>
+  <img src="screenshots/03-after-decrypt-click.png" alt="CBC déchiffré" />
+  <p>Bibliothèque : code Python exécuté</p>
+  <img src="screenshots/05-bibliotheque.png" alt="Bibliothèque" />
+  <p>GCM : octet modifié, authentification échouée, pas de clair</p>
+  <img src="screenshots/09-gcm-tamper.png" alt="GCM altéré" />
+  <p>Mise en page étroite</p>
+  <img src="screenshots/07-mobile-alice.png" alt="Mobile" />
+
+  <h2>5. API</h2>
+  <p>GET /api/health, POST /api/params/generate, POST /api/key-expansion, POST /api/session/encrypt, POST /api/session/decrypt, GET /api/source, GET /api/source/{id}, GET /api/source/{id}/download, GET /api/source/archive.zip, GET /api/glossary.</p>
+
+  <h2>6. Tests</h2>
+  <p><code>cd backend && python3 -m pytest</code> — <strong>50 réussis, 0 échec</strong> (31 octobre 2026).</p>
+  <p>FIPS 197 A.1 / B / C.1, SP 800-38A CBC F.2.1 et CTR F.5.1, SP 800-38D GCM cas 1–4, padding, tamper, API, nonce reuse. Interface vérifiée au Chrome headless : CBC aller-retour, GCM rejeté après altération.</p>
+
+  <h2>7. Sécurité</h2>
+  <p>Pas de secret dans Git. Pas de log des clés. Pas d’API externe. Limite 256 octets. Moteur pédagogique, temps non constant.</p>
+
+  <h2>8. Lancement</h2>
+  <pre>cd backend && python3 -m uvicorn app.main:app --host 127.0.0.1 --port 48180
+cd frontend && npm run dev
+# ou : docker compose up --build</pre>
+  <p>Interface : http://127.0.0.1:43123</p>
+
+  <h2>9. Difficultés</h2>
+  <p>Vecteurs CBC/GCM d’abord mal recopiés ; AES était déjà juste. Attaque CBC d’un seul bloc casse PKCS#7. Traces longues (un tour = plusieurs étapes). Second chiffrement GCM sans nouveau nonce refusé.</p>
+
+  <h2>10. Conclusion</h2>
+  <p>Outil pédagogique opérationnel. Améliorations : e2e dans le CI, nonce GCM variable, comparaison visuelle MixColumns. Ne pas utiliser pour protéger des données réelles.</p>
+</body>
+</html>

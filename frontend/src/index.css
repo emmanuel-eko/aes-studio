@@ -1,0 +1,127 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-display: "Fraunces", "Times New Roman", serif;
+  --font-sans: "IBM Plex Sans", "Helvetica Neue", sans-serif;
+  --font-mono: "IBM Plex Mono", "Menlo", monospace;
+  --color-paper: var(--paper);
+  --color-paper-2: var(--paper-2);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-rule: var(--rule);
+  --color-well: var(--well);
+  --color-well-ink: var(--well-ink);
+  --color-well-mute: var(--well-mute);
+  --color-alice: var(--alice);
+  --color-bob: var(--bob);
+  --color-oscar: var(--oscar);
+  --color-danger: var(--danger);
+  --color-chalk: var(--chalk);
+  --color-bubble-alice: var(--bubble-alice);
+  --color-bubble-bob: var(--bubble-bob);
+  --color-bubble-oscar: var(--bubble-oscar);
+}
+
+:root {
+  --paper: #f3efe6;
+  --paper-2: #e8e2d4;
+  --ink: #1a1814;
+  --ink-soft: #5a554c;
+  --rule: #c4bcae;
+  --well: #1c2126;
+  --well-ink: #e6e1d6;
+  --well-mute: #9a9488;
+  --alice: #6b2d22;
+  --bob: #2f4a3c;
+  --oscar: #6a5420;
+  --danger: #7a2e24;
+  --chalk: #f3efe6;
+  --bubble-alice: #f7f1e8;
+  --bubble-bob: #eef3ee;
+  --bubble-oscar: #f4efe2;
+  --selection: #d8c9a8;
+}
+
+.dark {
+  --paper: #12110f;
+  --paper-2: #1c1a16;
+  --ink: #efe8dc;
+  --ink-soft: #b0a898;
+  --rule: #3e3930;
+  --well: #0b0d0f;
+  --well-ink: #e6e1d6;
+  --well-mute: #9a9488;
+  --alice: #c56a58;
+  --bob: #6f9a82;
+  --oscar: #c4a36a;
+  --danger: #d07a6c;
+  --chalk: #f3efe6;
+  --bubble-alice: #2a201c;
+  --bubble-bob: #1c2621;
+  --bubble-oscar: #2a2418;
+  --selection: #4a4030;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+html {
+  overflow-x: hidden;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.55;
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+@media (max-width: 767px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+::selection {
+  background: var(--selection);
+  color: var(--ink);
+}
+
+.matrix-cell {
+  font-variant-numeric: tabular-nums;
+}
+
+.tok-kw {
+  color: #d9c4a4;
+}
+.tok-string {
+  color: #b9c9b2;
+}
+.tok-comment {
+  color: #8b8680;
+}
+.tok-number {
+  color: #c9b08a;
+}
+.tok-const {
+  color: #c7b8a3;
+}
