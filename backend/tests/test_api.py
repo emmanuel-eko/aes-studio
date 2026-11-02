@@ -269,6 +269,39 @@ def test_bloc_fips_197_roundtrip() -> None:
     assert any(step["operation"] == "InvShiftRows" for step in dec.json()["steps"])
 
 
+def test_bloc_uppercase_and_accents_roundtrip() -> None:
+    key = "000102030405060708090A0B0C0D0E0F"
+    for message in ("BONJOUR CLASSE !", "ÉLÈVE MODÈLE!"):
+        assert len(message.encode()) == 16
+        enc = client.post(
+            "/api/session/encrypt",
+            json={"plaintext": message, "mode": "BLOC", "key_hex": key},
+        )
+        assert enc.status_code == 200, enc.text
+        cipher = enc.json()["ciphertext_hex"]
+        assert enc.json()["used_key_hex"] == key.lower()
+        dec = client.post(
+            "/api/session/decrypt",
+            json={"ciphertext_hex": cipher, "mode": "BLOC", "key_hex": key.lower()},
+        )
+        assert dec.status_code == 200
+        assert dec.json()["plaintext"] == message
+        assert dec.json()["recovered_text"] == message
+
+
+def test_bloc_uppercase_hex_matches_fips() -> None:
+    enc = client.post(
+        "/api/session/encrypt",
+        json={
+            "plaintext_hex": "00112233445566778899AABBCCDDEEFF",
+            "mode": "BLOC",
+            "key_hex": "000102030405060708090A0B0C0D0E0F",
+        },
+    )
+    assert enc.status_code == 200
+    assert enc.json()["ciphertext_hex"] == "69c4e0d86a7b0430d8cdb78070b4c55a"
+
+
 def test_bloc_text_roundtrip_and_length_error() -> None:
     message = "Bonjour classe !"
     assert len(message.encode()) == 16

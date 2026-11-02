@@ -82,11 +82,13 @@ export function Studio() {
         const altered =
           sim.encrypt &&
           (sim.tamperedHex !== sim.encrypt.ciphertext_hex || sim.decrypt.padding_valid === false);
-        const wrongKey = !sim.bobUsesAliceKey;
+        const wrongKey = sim.bobKeyMismatch;
         items.push({
           id: "plain",
           from: "bob",
-          body: recovered,
+          body: wrongKey
+            ? "Mauvaise clé. Bob n’a pas la clé qui a produit ce chiffré : le message d’Alice ne ressort pas."
+            : recovered,
           meta: wrongKey
             ? "déchiffré · mauvaise clé"
             : altered
@@ -103,7 +105,7 @@ export function Studio() {
       }
     }
     return items;
-  }, [sim.bobUsesAliceKey, sim.decrypt, sim.encrypt, sim.tamperedHex]);
+  }, [sim.bobKeyMismatch, sim.decrypt, sim.encrypt, sim.tamperedHex]);
 
   const term = terms.find((item) => sim.current?.glossary.includes(item.id));
 
@@ -267,7 +269,7 @@ function AliceColumn({ sim, bubbles }: { sim: Simulation; bubbles: Bubble[] }) {
       {sim.mode === "BLOC" && (
         <p className="text-sm text-ink-soft">
           Un seul bloc AES-128 : pas de mode d’opération, pas de vecteur d’initialisation, pas de remplissage.
-          Le message doit faire exactement 16 octets — par exemple « Bonjour classe ! ».
+          Le message doit faire exactement 16 octets — par exemple « Bonjour classe ! » ou « BONJOUR CLASSE ! ». Une majuscule compte 1 octet, É en compte 2.
         </p>
       )}
       {sim.error && (
@@ -314,20 +316,76 @@ function AliceColumn({ sim, bubbles }: { sim: Simulation; bubbles: Bubble[] }) {
   );
 }
 
-function ParamFields({ sim }: { sim: Simulation }) {
+function KeyEditor({
+  label,
+  value,
+  onChange,
+  format,
+  onFormat,
+  byteLength,
+  note,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  format: "texte" | "hex";
+  onFormat: (format: "texte" | "hex") => void;
+  byteLength: number | null;
+  note?: string | null;
+}) {
+  const ready = byteLength === 16;
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <label className="block">
-        <span className="font-mono text-[10px] tracking-[0.14em] text-ink-soft uppercase">
-          Clé secrète · 128 bits
-        </span>
+        <span className="font-mono text-[10px] tracking-[0.14em] text-ink-soft uppercase">{label}</span>
         <input
-          value={sim.keyHex}
-          onChange={(event) => sim.setKeyHex(event.target.value)}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
           spellCheck={false}
           className="mt-1 w-full border border-rule bg-transparent px-3 py-2 font-mono text-[12px] outline-none"
         />
       </label>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className={`font-mono text-sm ${ready ? "text-bob" : "text-danger"}`} aria-live="polite">
+          {byteLength === null ? "Hexadécimal invalide" : `${byteLength} / 16 octets`}
+        </p>
+        <div className="flex gap-2">
+          {(["texte", "hex"] as const).map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => onFormat(item)}
+              className={`border px-3 py-1 font-mono text-[11px] uppercase ${
+                format === item ? "border-ink bg-paper-2" : "border-rule text-ink-soft"
+              }`}
+            >
+              {item === "texte" ? "Texte" : "Hexadécimal"}
+            </button>
+          ))}
+        </div>
+      </div>
+      {note && <p className="text-sm text-ink-soft">{note}</p>}
+    </div>
+  );
+}
+
+function ParamFields({ sim }: { sim: Simulation }) {
+  return (
+    <div className="space-y-3">
+      <KeyEditor
+        label="Clé secrète · 16 octets"
+        value={sim.keyDraft}
+        onChange={sim.setKeyDraft}
+        format={sim.keyFormat}
+        onFormat={sim.setAliceKeyFormat}
+        byteLength={sim.keyByteLength}
+        note={sim.keyNote ?? "Texte : 16 octets, majuscules et accents compris. Hexadécimal : 32 chiffres, majuscules ou minuscules."}
+      />
+      {sim.keyPending && (
+        <p className="text-sm text-ink-soft">
+          Cette clé n’est pas encore celle du dernier chiffré. « Chiffrer et envoyer » l’applique, et Bob la reprend s’il utilisait la précédente.
+        </p>
+      )}
       {sim.mode === "CBC" && (
         <label className="block">
           <span className="font-mono text-[10px] tracking-[0.14em] text-ink-soft uppercase">
@@ -512,12 +570,16 @@ function RecoveredMessage({
   actor,
   mode,
   session,
+  wrongKey = false,
 }: {
   actor: string;
   mode: Mode;
   session: NonNullable<Simulation["decrypt"]>;
+  wrongKey?: boolean;
 }) {
-  const text = session.recovered_text ?? session.plaintext;
+  const text = wrongKey
+    ? "Mauvaise clé : ce bloc n’est pas le message d’Alice."
+    : (session.recovered_text ?? session.plaintext);
   if (mode === "GCM" && session.authenticated === false) {
     return (
       <p className="border border-danger px-3 py-2 text-sm text-danger">
@@ -637,17 +699,14 @@ function BobColumn({ sim, bubbles }: { sim: Simulation; bubbles: Bubble[] }) {
         </label>
       )}
 
-      <label className="block space-y-2 text-sm">
-        <span className="font-mono text-[10px] tracking-[0.14em] text-ink-soft uppercase">
-          Clé utilisée par Bob
-        </span>
-        <input
-          value={sim.bobKeyHex}
-          onChange={(event) => sim.setBobKeyHex(normalizeHex(event.target.value))}
-          spellCheck={false}
-          className="w-full border border-rule bg-paper px-3 py-2 font-mono text-[12px] break-all"
-        />
-      </label>
+      <KeyEditor
+        label="Clé utilisée par Bob"
+        value={sim.bobDraft}
+        onChange={sim.setBobDraft}
+        format={sim.bobFormat}
+        onFormat={sim.setBobKeyFormat}
+        byteLength={sim.bobKeyByteLength}
+      />
       <div className="flex flex-wrap gap-2">
         <button type="button" onClick={sim.generateBobKey} className="border border-rule px-3 py-1 text-sm">
           Générer une autre clé
@@ -661,11 +720,11 @@ function BobColumn({ sim, bubbles }: { sim: Simulation; bubbles: Bubble[] }) {
           Reprendre la clé d’Alice
         </button>
       </div>
-      {!sim.bobUsesAliceKey && (
+      {sim.bobKeyMismatch && (
         <p className="border border-oscar/40 px-3 py-2 text-sm">
           {sim.mode === "GCM"
-            ? "Cette clé n’est pas celle d’Alice. GCM recalcule un tag différent : le clair n’est pas restitué."
-            : "Cette clé n’est pas celle d’Alice. AES produit un « clair » illisible : le déchiffrement réussit, le texte n’a aucun sens."}
+            ? "Mauvaise clé. Bob n’utilise pas la clé qui a chiffré ce message : GCM recalcule un autre tag et ne restitue pas le clair."
+            : "Mauvaise clé. Bob n’utilise pas la clé qui a chiffré ce message. AES produit un autre bloc, pas le texte d’Alice. Reprenez la clé d’Alice, ou chiffrez à nouveau une fois les deux clés identiques."}
         </p>
       )}
 
@@ -675,7 +734,12 @@ function BobColumn({ sim, bubbles }: { sim: Simulation; bubbles: Bubble[] }) {
         </p>
       ))}
       {sim.decrypt && (
-        <RecoveredMessage actor="Bob" mode={sim.mode} session={sim.decrypt} />
+        <RecoveredMessage
+          actor="Bob"
+          mode={sim.mode}
+          session={sim.decrypt}
+          wrongKey={sim.bobKeyMismatch}
+        />
       )}
       {sim.decrypt && sim.decrypt.authenticated !== false && sim.decrypt.padding_valid === false && (
         <p className="border border-rule px-3 py-2 text-sm">
@@ -685,7 +749,7 @@ function BobColumn({ sim, bubbles }: { sim: Simulation; bubbles: Bubble[] }) {
       <button
         type="button"
         onClick={() => void sim.runDecrypt("bob")}
-        disabled={!sim.encrypt || sim.busy || normalizeHex(sim.bobKeyHex).length !== 32}
+        disabled={!sim.encrypt || sim.busy || !sim.bobKeyHex}
         className="min-h-11 w-full border border-bob bg-bob px-4 py-2 text-sm text-chalk disabled:opacity-40 sm:w-auto"
       >
         Déchiffrer
