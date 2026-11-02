@@ -2,7 +2,8 @@ import { NavLink, Outlet } from "react-router-dom";
 import { useTheme } from "../../hooks/useTheme";
 
 const links = [
-  { to: "/", label: "Studio" },
+  { to: "/", label: "AES simple" },
+  { to: "/avance", label: "Avancé" },
   { to: "/bibliotheque", label: "Bibliothèque" },
   { to: "/notions", label: "Notions" },
 ];
@@ -12,12 +13,9 @@ export function AppShell() {
   return (
     <div className="min-h-dvh bg-paper text-ink">
       <header className="sticky top-0 z-30 border-b border-rule bg-paper/95 pt-[env(safe-area-inset-top)] backdrop-blur">
-        <div className="mx-auto flex max-w-[1440px] flex-col gap-3 px-4 py-3 sm:px-5 md:flex-row md:items-end md:justify-between md:gap-6 md:px-8 md:py-4">
+        <div className="mx-auto flex max-w-[1440px] flex-col gap-3 px-4 py-3 sm:px-5 md:flex-row md:items-end md:justify-between md:gap-6 md:px-8 md:py-2">
           <div>
-            <p className="font-mono text-[10px] tracking-[0.18em] text-ink-soft uppercase md:text-[11px]">
-              Atelier n°128
-            </p>
-            <h1 className="font-display text-[1.7rem] leading-none tracking-tight md:text-[2.35rem]">
+            <h1 className="font-display text-[1.7rem] leading-none tracking-tight md:text-[1.8rem]">
               AES Studio
             </h1>
           </div>
@@ -26,6 +24,7 @@ export function AppShell() {
               <NavLink
                 key={link.to}
                 to={link.to}
+                end
                 className={({ isActive }) =>
                   `inline-flex min-h-11 items-center ${
                     isActive ? "text-ink" : "text-ink-soft hover:text-ink"
