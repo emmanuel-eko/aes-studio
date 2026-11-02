@@ -9,6 +9,7 @@ import os
 import secrets
 from threading import Lock
 
+from app.cryptography.aes import decrypt_block, encrypt_block
 from app.cryptography.cbc import cbc_decrypt, cbc_encrypt
 from app.cryptography.ctr import ctr_crypt
 from app.cryptography.gcm import AuthenticationError, gcm_decrypt, gcm_encrypt
@@ -76,9 +77,15 @@ def generate_params(mode: str) -> GenerateParamsResponse:
     elif mode == "CTR":
         counter_hex = to_hex(secrets.token_bytes(16))
         notes.append("Compteur initial CTR de 128 bits, à ne pas réutiliser avec la même clé.")
-    else:
+    elif mode == "GCM":
         nonce_hex = to_hex(secrets.token_bytes(12))
         notes.append("Nonce GCM de 96 bits. Ne jamais le réutiliser avec la même clé.")
+    elif mode == "BLOC":
+        notes.append(
+            "AES seul : un bloc de 16 octets, sans mode, sans IV et sans remplissage."
+        )
+    else:
+        raise CryptoError("Mode inconnu.")
     return GenerateParamsResponse(
         key_hex=to_hex(key),
         iv_hex=iv_hex,
@@ -120,6 +127,33 @@ def _representations(
     )
 
 
+def _bloc_message(req: EncryptRequest) -> bytes:
+    """Exactly 16 raw bytes: hex when provided, otherwise UTF-8. No padding."""
+    if req.plaintext_hex:
+        cleaned = (
+            req.plaintext_hex.strip().replace(" ", "").replace(":", "").lower()
+        )
+        if cleaned.startswith("0x"):
+            cleaned = cleaned[2:]
+        if not cleaned or any(ch not in "0123456789abcdef" for ch in cleaned):
+            raise CryptoError(
+                "Le message hexadécimal est invalide. Utilisez uniquement des chiffres 0–9 et des lettres A–F."
+            )
+        if len(cleaned) % 2 != 0:
+            raise CryptoError(
+                "Le message hexadécimal doit contenir un nombre pair de chiffres."
+            )
+        data = _limit(bytes.fromhex(cleaned), "message")
+    else:
+        data = _limit(utf8_bytes(req.plaintext), "message")
+    if len(data) != BLOCK_SIZE:
+        raise CryptoError(
+            f"Le message doit faire exactement 16 octets (actuellement {len(data)}). "
+            "AES sans mode n’utilise ni remplissage, ni vecteur d’initialisation, ni mode d’opération."
+        )
+    return data
+
+
 def _register_gcm(key_hex: str, nonce_hex: str) -> None:
     token = (key_hex.lower().replace(" ", ""), nonce_hex.lower().replace(" ", ""))
     with _gcm_lock:
@@ -134,14 +168,18 @@ def _register_gcm(key_hex: str, nonce_hex: str) -> None:
 
 def encrypt_session(req: EncryptRequest) -> SessionResponse:
     key = _parse_key(req.key_hex)
-    plaintext = _limit(utf8_bytes(req.plaintext), "message")
     aad = _limit(utf8_bytes(req.aad), "AAD")
     trace = TraceCollector()
     warnings: list[str] = []
     tag = None
     public: dict[str, str] = {"mode": req.mode, "algorithm": "AES-128"}
 
-    if req.mode == "CBC":
+    if req.mode == "BLOC":
+        plaintext = _bloc_message(req)
+        ciphertext = encrypt_block(plaintext, key, trace, phase="encrypt", block_index=0)
+        public = {"algorithme": "AES-128", "bloc": "16 octets, sans mode"}
+    elif req.mode == "CBC":
+        plaintext = _limit(utf8_bytes(req.plaintext), "message")
         if not req.iv_hex:
             raise CryptoError("CBC exige un IV de 16 octets.")
         iv = hex_to_bytes(req.iv_hex, name="IV")
@@ -150,6 +188,7 @@ def encrypt_session(req: EncryptRequest) -> SessionResponse:
         ciphertext = cbc_encrypt(plaintext, key, iv, trace)
         public["iv_hex"] = to_hex(iv)
     elif req.mode == "CTR":
+        plaintext = _limit(utf8_bytes(req.plaintext), "message")
         if not req.counter_hex:
             raise CryptoError("CTR exige un compteur initial de 16 octets.")
         counter = hex_to_bytes(req.counter_hex, name="compteur")
@@ -158,6 +197,7 @@ def encrypt_session(req: EncryptRequest) -> SessionResponse:
         ciphertext = ctr_crypt(plaintext, key, counter, trace)
         public["counter_hex"] = to_hex(counter)
     else:
+        plaintext = _limit(utf8_bytes(req.plaintext), "message")
         if not req.nonce_hex:
             raise CryptoError("GCM exige un nonce de 12 octets (96 bits).")
         nonce = hex_to_bytes(req.nonce_hex, name="nonce")
@@ -172,19 +212,22 @@ def encrypt_session(req: EncryptRequest) -> SessionResponse:
             public["aad"] = req.aad
 
     operations = [step["operation"] for step in trace.as_list()]
+    shown = req.plaintext or None
+    if req.mode == "BLOC" and not req.plaintext:
+        shown = try_utf8(plaintext)
     return SessionResponse(
         ok=True,
         mode=req.mode,
         actor="alice",
         authenticated=True if req.mode == "GCM" else None,
-        plaintext=req.plaintext,
+        plaintext=shown,
         plaintext_hex=to_hex(plaintext),
         ciphertext_hex=to_hex(ciphertext),
         tag_hex=to_hex(tag) if tag is not None else None,
         public_params=public,
         secret_params_present={"key": True},
         representations=_representations(
-            text=req.plaintext,
+            text=shown,
             data=plaintext,
             ciphertext=ciphertext,
             tag=tag,
@@ -241,7 +284,22 @@ def decrypt_session(req: DecryptRequest) -> SessionResponse:
                 raise CryptoError("Le compteur CTR doit faire 16 octets.")
             public["counter_hex"] = to_hex(counter)
             plaintext = ctr_crypt(ciphertext, key, counter, trace, phase="mode_ctr")
-        else:
+        elif req.mode == "BLOC":
+            if len(ciphertext) != BLOCK_SIZE:
+                raise CryptoError(
+                    f"Le chiffré AES sans mode doit faire exactement 16 octets "
+                    f"(actuellement {len(ciphertext)})."
+                )
+            plaintext = decrypt_block(
+                ciphertext,
+                key,
+                trace,
+                phase="decrypt",
+                block_index=0,
+                detail_rounds=True,
+            )
+            public = {"algorithme": "AES-128", "bloc": "16 octets, sans mode"}
+        elif req.mode == "GCM":
             if not req.nonce_hex or not req.tag_hex:
                 raise CryptoError("GCM exige le nonce et le tag.")
             nonce = hex_to_bytes(req.nonce_hex, name="nonce")
@@ -277,7 +335,10 @@ def decrypt_session(req: DecryptRequest) -> SessionResponse:
 
     recovered = display_text(plaintext) if plaintext is not None else None
     text = try_utf8(plaintext) if plaintext is not None else None
-    if req.mode in {"CBC", "CTR"} and recovered is not None:
+    if req.mode == "BLOC" and plaintext is not None:
+        text = try_utf8(plaintext)
+        recovered = text if text is not None else "Ce bloc n’est pas du texte UTF-8."
+    elif req.mode in {"CBC", "CTR"} and recovered is not None:
         # No authentication: always expose the obtained string, even if it is not UTF-8.
         text = recovered
         if error_kind == "crypto" and plaintext is not None:
@@ -292,7 +353,7 @@ def decrypt_session(req: DecryptRequest) -> SessionResponse:
     operations = [step["operation"] for step in trace.as_list()]
     return SessionResponse(
         ok=(
-            (req.mode in {"CBC", "CTR"} and plaintext is not None)
+            (req.mode in {"CBC", "CTR", "BLOC"} and plaintext is not None)
             or (
                 authenticated is not False
                 and error_kind not in {"validation", "size", "crypto", "nonce_reuse"}

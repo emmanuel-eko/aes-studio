@@ -48,6 +48,7 @@ export function expandKey(key_hex: string) {
 
 export function encryptSession(payload: {
   plaintext: string;
+  plaintext_hex?: string;
   mode: Mode;
   key_hex: string;
   iv_hex?: string;

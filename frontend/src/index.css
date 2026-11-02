@@ -87,20 +87,18 @@ body {
 }
 
 @media (max-width: 767px) {
-  input:not([class*="text-"]),
+  input,
   textarea,
   select {
     font-size: 16px;
   }
 }
 
-@layer base {
-  button,
-  input,
-  textarea,
-  select {
-    font: inherit;
-  }
+button,
+input,
+textarea,
+select {
+  font: inherit;
 }
 
 ::selection {

@@ -243,6 +243,77 @@ def test_gcm_wrong_key_rejects() -> None:
     assert body["plaintext"] is None
 
 
+def test_bloc_fips_197_roundtrip() -> None:
+    key = "000102030405060708090a0b0c0d0e0f"
+    plain = "00112233445566778899aabbccddeeff"
+    enc = client.post(
+        "/api/session/encrypt",
+        json={"plaintext_hex": plain, "mode": "BLOC", "key_hex": key},
+    )
+    assert enc.status_code == 200
+    body = enc.json()
+    assert body["ciphertext_hex"] == "69c4e0d86a7b0430d8cdb78070b4c55a"
+    assert "mode" not in body["public_params"]
+    titles = [step["title"] for step in body["steps"]]
+    assert any("SubBytes" in title for title in titles)
+    assert any("ShiftRows" in title for title in titles)
+    assert any("MixColumns" in title for title in titles)
+    assert any("AddRoundKey" in title for title in titles)
+    assert any(title.startswith("Tour 10 — AddRoundKey") for title in titles)
+    dec = client.post(
+        "/api/session/decrypt",
+        json={"ciphertext_hex": body["ciphertext_hex"], "mode": "BLOC", "key_hex": key, "actor": "bob"},
+    )
+    assert dec.status_code == 200
+    assert dec.json()["plaintext_hex"] == plain
+    assert any(step["operation"] == "InvShiftRows" for step in dec.json()["steps"])
+
+
+def test_bloc_text_roundtrip_and_length_error() -> None:
+    message = "Bonjour classe !"
+    assert len(message.encode()) == 16
+    enc = client.post(
+        "/api/session/encrypt",
+        json={
+            "plaintext": message,
+            "mode": "BLOC",
+            "key_hex": "000102030405060708090a0b0c0d0e0f",
+        },
+    )
+    assert enc.status_code == 200
+    cipher = enc.json()["ciphertext_hex"]
+    assert len(cipher) == 32
+    dec = client.post(
+        "/api/session/decrypt",
+        json={
+            "ciphertext_hex": cipher,
+            "mode": "BLOC",
+            "key_hex": "000102030405060708090a0b0c0d0e0f",
+        },
+    )
+    assert dec.json()["plaintext"] == message
+
+    short = client.post(
+        "/api/session/encrypt",
+        json={"plaintext": "bonjour", "mode": "BLOC", "key_hex": KEY},
+    )
+    assert short.status_code == 400
+    detail = short.json()["detail"]
+    message_err = detail["message"] if isinstance(detail, dict) else detail
+    assert "16 octets" in message_err
+    assert "7" in message_err
+
+
+def test_generate_params_bloc_has_no_iv() -> None:
+    response = client.post("/api/params/generate", json={"mode": "BLOC"})
+    body = response.json()
+    assert response.status_code == 200
+    assert len(body["key_hex"]) == 32
+    assert body["iv_hex"] is None
+    assert body["counter_hex"] is None
+    assert body["nonce_hex"] is None
+
+
 def test_bob_can_shorten_ciphertext() -> None:
     enc = client.post(
         "/api/session/encrypt",

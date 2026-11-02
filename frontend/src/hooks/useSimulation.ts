@@ -4,6 +4,9 @@ import { decryptSession, encryptSession, generateParams } from "../services/api"
 import type { Mode, Phase, RepresentationKey, SessionResponse, TraceStep } from "../types";
 
 const SPEEDS = [0.5, 1, 1.5, 2.5];
+const STEP_BASE_MS = 1200;
+
+export type MessageFormat = "texte" | "hex";
 
 export interface CombinedStep extends TraceStep {
   lane: "encrypt" | "decrypt" | "oscar";
@@ -22,6 +25,7 @@ const DEFAULT_REPS: Record<RepresentationKey, boolean> = {
 export function useSimulation() {
   const [mode, setMode] = useState<Mode>("CBC");
   const [message, setMessage] = useState("Le rendez-vous est confirmé à 18 heures.");
+  const [messageFormat, setMessageFormat] = useState<MessageFormat>("texte");
   const [aad, setAad] = useState("from:alice;to:bob");
   const [keyHex, setKeyHex] = useState("");
   const [ivHex, setIvHex] = useState("");
@@ -44,6 +48,17 @@ export function useSimulation() {
   const [reps, setReps] = useState(DEFAULT_REPS);
   const [codeOpen, setCodeOpen] = useState(false);
   const timer = useRef<number | null>(null);
+  const autoStopAt = useRef<number | null>(null);
+
+  const messageByteLength = useMemo<number | null>(() => {
+    if (mode === "BLOC" && messageFormat === "hex") {
+      const clean = message.replace(/\s+/g, "");
+      if (!clean) return 0;
+      if (clean.length % 2 !== 0 || /[^0-9a-fA-F]/.test(clean)) return null;
+      return clean.length / 2;
+    }
+    return new TextEncoder().encode(message).length;
+  }, [message, messageFormat, mode]);
 
   const seedParams = useCallback(async (nextMode: Mode) => {
     const params = await generateParams(nextMode);
@@ -80,14 +95,21 @@ export function useSimulation() {
   useEffect(() => {
     stopTimer();
     if (!playing || steps.length === 0) return;
-    const delay = 900 / SPEEDS[speedIndex];
+    const delay = STEP_BASE_MS / SPEEDS[speedIndex];
     timer.current = window.setInterval(() => {
       setStepIndex((index) => {
-        if (index >= steps.length - 1) {
+        const next = index + 1;
+        if (next >= steps.length) {
+          setPlaying(false);
+          autoStopAt.current = null;
+          return index;
+        }
+        if (autoStopAt.current !== null && next > autoStopAt.current) {
+          autoStopAt.current = null;
           setPlaying(false);
           return index;
         }
-        return index + 1;
+        return next;
       });
     }, delay);
     return stopTimer;
@@ -108,6 +130,7 @@ export function useSimulation() {
 
   const changeMode = async (next: Mode) => {
     setMode(next);
+    if (next !== "BLOC") setMessageFormat("texte");
     resetTrace(next);
   };
 
@@ -118,8 +141,27 @@ export function useSimulation() {
     setOscar(null);
     setPlaying(false);
     try {
+      if (mode === "BLOC") {
+        if (messageByteLength === null) {
+          setError(
+            "Le message hexadécimal est invalide. Utilisez uniquement des chiffres 0–9 et des lettres A–F, par paires.",
+          );
+          return;
+        }
+        if (messageByteLength !== 16) {
+          setError(
+            `Le message doit faire exactement 16 octets (actuellement ${messageByteLength}). AES sans mode n’utilise ni remplissage, ni vecteur d’initialisation, ni mode d’opération.`,
+          );
+          return;
+        }
+        if (normalizeHex(keyHex).length !== 32) {
+          setError("La clé doit faire exactement 16 octets (32 chiffres hexadécimaux).");
+          return;
+        }
+      }
       const session = await encryptSession({
-        plaintext: message,
+        plaintext: mode === "BLOC" && messageFormat === "hex" ? "" : message,
+        plaintext_hex: mode === "BLOC" && messageFormat === "hex" ? normalizeHex(message) : undefined,
         mode,
         key_hex: keyHex,
         iv_hex: mode === "CBC" ? ivHex : undefined,
@@ -130,7 +172,13 @@ export function useSimulation() {
       setEncrypt(session);
       setTamperedHex(session.ciphertext_hex);
       setTamperedTag(session.tag_hex ?? "");
-      setStepIndex(0);
+      const firstRound = session.steps.findIndex((step) =>
+        ["AES.input", "SubBytes", "ShiftRows", "MixColumns", "AddRoundKey"].includes(step.operation),
+      );
+      const start = firstRound >= 0 ? firstRound : 0;
+      setStepIndex(start);
+      autoStopAt.current = Math.max(0, session.steps.length - 1);
+      setPlaying(session.steps.length > 1 && start < session.steps.length - 1);
       if (mode === "GCM") {
         setPhase(attacker ? "tamper" : "transit");
       } else {
@@ -144,7 +192,6 @@ export function useSimulation() {
         });
         setDecrypt(recovered);
         setPhase("complete");
-        setStepIndex(session.steps.length);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Chiffrement impossible");
@@ -212,6 +259,25 @@ export function useSimulation() {
     mode,
     message,
     setMessage,
+    messageFormat,
+    setMessageFormat,
+    messageByteLength,
+    loadFips: () => {
+      setMessageFormat("hex");
+      setMessage("00112233445566778899aabbccddeeff");
+      const fipsKey = "000102030405060708090a0b0c0d0e0f";
+      setKeyHex(fipsKey);
+      setBobKeyHex(fipsKey);
+      setError(null);
+      setEncrypt(null);
+      setDecrypt(null);
+      setOscar(null);
+      setTamperedHex("");
+      setTamperedTag("");
+      setStepIndex(0);
+      setPlaying(false);
+      setPhase("compose");
+    },
     aad,
     setAad,
     keyHex,
@@ -254,6 +320,7 @@ export function useSimulation() {
     playing,
     setPlaying,
     speed: SPEEDS[speedIndex],
+    stepDurationMs: STEP_BASE_MS / SPEEDS[speedIndex],
     cycleSpeed: () => setSpeedIndex((i) => (i + 1) % SPEEDS.length),
     reps,
     toggleRep: (key: RepresentationKey) => setReps((prev) => ({ ...prev, [key]: !prev[key] })),
