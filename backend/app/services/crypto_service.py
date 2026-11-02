@@ -226,6 +226,7 @@ def encrypt_session(req: EncryptRequest) -> SessionResponse:
         tag_hex=to_hex(tag) if tag is not None else None,
         public_params=public,
         secret_params_present={"key": True},
+        used_key_hex=to_hex(key),
         representations=_representations(
             text=shown,
             data=plaintext,

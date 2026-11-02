@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { normalizeHex, randomKeyHex } from "../lib/hex";
+import {
+  keyError,
+  keyForBob,
+  keyMaterialBytes,
+  resolveKeyHex,
+  switchKeyDraft,
+  type KeyFormat,
+} from "../lib/keyMaterial";
 import { decryptSession, encryptSession, generateParams } from "../services/api";
 import type { Mode, Phase, RepresentationKey, SessionResponse, TraceStep } from "../types";
 
@@ -27,12 +35,17 @@ export function useSimulation() {
   const [message, setMessage] = useState("Le rendez-vous est confirmé à 18 heures.");
   const [messageFormat, setMessageFormat] = useState<MessageFormat>("texte");
   const [aad, setAad] = useState("from:alice;to:bob");
-  const [keyHex, setKeyHex] = useState("");
+  const [keyDraft, setKeyDraft] = useState("");
+  const [keyFormat, setKeyFormat] = useState<KeyFormat>("hex");
+  const [keyNote, setKeyNote] = useState<string | null>(null);
+  const [bobDraft, setBobDraftState] = useState("");
+  const [bobFormat, setBobFormat] = useState<KeyFormat>("hex");
+  const [bobChoseOwnKey, setBobChoseOwnKey] = useState(false);
+  const [encryptionKeyHex, setEncryptionKeyHex] = useState<string | null>(null);
   const [ivHex, setIvHex] = useState("");
   const [counterHex, setCounterHex] = useState("");
   const [nonceHex, setNonceHex] = useState("");
   const [oscarGuess, setOscarGuess] = useState("00000000000000000000000000000000");
-  const [bobKeyHex, setBobKeyHex] = useState("");
   const [attacker, setAttacker] = useState(false);
   const [phase, setPhase] = useState<Phase>("compose");
   const [busy, setBusy] = useState(false);
@@ -60,10 +73,19 @@ export function useSimulation() {
     return new TextEncoder().encode(message).length;
   }, [message, messageFormat, mode]);
 
+  const aliceKeyHex = useMemo(() => resolveKeyHex(keyDraft, keyFormat), [keyDraft, keyFormat]);
+  const bobKeyHex = useMemo(() => resolveKeyHex(bobDraft, bobFormat), [bobDraft, bobFormat]);
+  const keyByteLength = useMemo(() => keyMaterialBytes(keyDraft, keyFormat), [keyDraft, keyFormat]);
+  const bobKeyByteLength = useMemo(() => keyMaterialBytes(bobDraft, bobFormat), [bobDraft, bobFormat]);
+
   const seedParams = useCallback(async (nextMode: Mode) => {
     const params = await generateParams(nextMode);
-    setKeyHex(params.key_hex);
-    setBobKeyHex(params.key_hex);
+    setKeyDraft(params.key_hex);
+    setKeyFormat("hex");
+    setKeyNote(null);
+    setBobDraftState(params.key_hex);
+    setBobFormat("hex");
+    setBobChoseOwnKey(false);
     setIvHex(params.iv_hex ?? "");
     setCounterHex(params.counter_hex ?? "");
     setNonceHex(params.nonce_hex ?? "");
@@ -125,6 +147,7 @@ export function useSimulation() {
     setPlaying(false);
     setPhase("compose");
     setError(null);
+    setEncryptionKeyHex(null);
     void seedParams(nextMode).catch((err: Error) => setError(err.message));
   };
 
@@ -142,34 +165,45 @@ export function useSimulation() {
     setPlaying(false);
     try {
       if (mode === "BLOC") {
-        if (messageByteLength === null) {
+        if (messageFormat === "hex" && messageByteLength === null) {
           setError(
-            "Le message hexadécimal est invalide. Utilisez uniquement des chiffres 0–9 et des lettres A–F, par paires.",
+            "Ce n’est pas de l’hexadécimal : une phrase, surtout avec des majuscules, se saisit en « Texte ». L’hexadécimal n’accepte que 0–9 et A–F.",
           );
           return;
         }
         if (messageByteLength !== 16) {
           setError(
-            `Le message doit faire exactement 16 octets (actuellement ${messageByteLength}). AES sans mode n’utilise ni remplissage, ni vecteur d’initialisation, ni mode d’opération.`,
+            `Le message doit faire exactement 16 octets (actuellement ${messageByteLength ?? 0}). AES sans mode n’utilise ni remplissage, ni vecteur d’initialisation, ni mode d’opération. Les majuscules comptent 1 octet, un accent comme É en compte 2.`,
           );
           return;
         }
-        if (normalizeHex(keyHex).length !== 32) {
-          setError("La clé doit faire exactement 16 octets (32 chiffres hexadécimaux).");
-          return;
-        }
+      }
+      const aliceHex = resolveKeyHex(keyDraft, keyFormat);
+      if (!aliceHex) {
+        setError(keyError(keyDraft, keyFormat) ?? "Clé invalide.");
+        return;
+      }
+      const bobHex = keyForBob(aliceHex, bobKeyHex, bobChoseOwnKey);
+      if (!bobHex) {
+        setError(keyError(bobDraft, bobFormat) ?? "La clé de Bob est invalide.");
+        return;
       }
       const session = await encryptSession({
         plaintext: mode === "BLOC" && messageFormat === "hex" ? "" : message,
         plaintext_hex: mode === "BLOC" && messageFormat === "hex" ? normalizeHex(message) : undefined,
         mode,
-        key_hex: keyHex,
+        key_hex: aliceHex,
         iv_hex: mode === "CBC" ? ivHex : undefined,
         counter_hex: mode === "CTR" ? counterHex : undefined,
         nonce_hex: mode === "GCM" ? nonceHex : undefined,
         aad: mode === "GCM" ? aad : undefined,
       });
+      if (!bobChoseOwnKey) {
+        setBobDraftState(keyDraft);
+        setBobFormat(keyFormat);
+      }
       setEncrypt(session);
+      setEncryptionKeyHex(session.used_key_hex ?? aliceHex);
       setTamperedHex(session.ciphertext_hex);
       setTamperedTag(session.tag_hex ?? "");
       const firstRound = session.steps.findIndex((step) =>
@@ -185,7 +219,7 @@ export function useSimulation() {
         const recovered = await decryptSession({
           ciphertext_hex: session.ciphertext_hex,
           mode,
-          key_hex: bobKeyHex || keyHex,
+          key_hex: bobHex,
           iv_hex: mode === "CBC" ? ivHex : undefined,
           counter_hex: mode === "CTR" ? counterHex : undefined,
           actor: "bob",
@@ -203,6 +237,15 @@ export function useSimulation() {
 
   const runDecrypt = async (actor: "bob" | "oscar" = "bob") => {
     if (!encrypt) return;
+    const key = actor === "oscar" ? resolveKeyHex(oscarGuess, "hex") : bobKeyHex;
+    if (!key) {
+      setError(
+        actor === "oscar"
+          ? "L’essai d’Oscar doit être une clé hexadécimale de 16 octets."
+          : (keyError(bobDraft, bobFormat) ?? "La clé de Bob est invalide."),
+      );
+      return;
+    }
     setBusy(true);
     setError(null);
     setPlaying(false);
@@ -210,7 +253,7 @@ export function useSimulation() {
       const session = await decryptSession({
         ciphertext_hex: actor === "bob" ? normalizeHex(tamperedHex) : encrypt.ciphertext_hex,
         mode,
-        key_hex: actor === "oscar" ? oscarGuess : bobKeyHex || keyHex,
+        key_hex: key,
         iv_hex: mode === "CBC" ? ivHex : undefined,
         counter_hex: mode === "CTR" ? counterHex : undefined,
         nonce_hex: mode === "GCM" ? nonceHex : undefined,
@@ -233,8 +276,8 @@ export function useSimulation() {
   };
 
   useEffect(() => {
-    if (!encrypt || mode === "GCM") return;
-    const key = normalizeHex(bobKeyHex);
+    if (!encrypt || mode === "GCM" || !bobKeyHex) return;
+    const key = bobKeyHex;
     const cipher = normalizeHex(tamperedHex);
     if (key.length !== 32 || cipher.length === 0) return;
     const timerId = window.setTimeout(() => {
@@ -266,8 +309,13 @@ export function useSimulation() {
       setMessageFormat("hex");
       setMessage("00112233445566778899aabbccddeeff");
       const fipsKey = "000102030405060708090a0b0c0d0e0f";
-      setKeyHex(fipsKey);
-      setBobKeyHex(fipsKey);
+      setKeyDraft(fipsKey);
+      setKeyFormat("hex");
+      setKeyNote(null);
+      setBobDraftState(fipsKey);
+      setBobFormat("hex");
+      setBobChoseOwnKey(false);
+      setEncryptionKeyHex(null);
       setError(null);
       setEncrypt(null);
       setDecrypt(null);
@@ -280,8 +328,21 @@ export function useSimulation() {
     },
     aad,
     setAad,
-    keyHex,
-    setKeyHex,
+    keyDraft,
+    setKeyDraft: (value: string) => {
+      setKeyNote(null);
+      setKeyDraft(value);
+    },
+    keyFormat,
+    setAliceKeyFormat: (next: KeyFormat) => {
+      const switched = switchKeyDraft(keyDraft, keyFormat, next);
+      setKeyNote(switched.note);
+      setKeyFormat(switched.format);
+      setKeyDraft(switched.draft);
+    },
+    keyByteLength,
+    keyNote,
+    keyPending: Boolean(aliceKeyHex && encryptionKeyHex && aliceKeyHex !== encryptionKeyHex),
     ivHex,
     setIvHex,
     counterHex,
@@ -290,16 +351,37 @@ export function useSimulation() {
     setNonceHex,
     oscarGuess,
     setOscarGuess,
+    bobDraft,
+    setBobDraft: (value: string) => {
+      setBobChoseOwnKey(true);
+      setBobDraftState(value);
+    },
+    bobFormat,
+    setBobKeyFormat: (next: KeyFormat) => {
+      const switched = switchKeyDraft(bobDraft, bobFormat, next);
+      setBobChoseOwnKey(true);
+      setBobFormat(switched.format);
+      setBobDraftState(switched.draft);
+    },
+    bobKeyByteLength,
     bobKeyHex,
-    setBobKeyHex,
-    generateBobKey: () => setBobKeyHex(randomKeyHex()),
-    useAliceKey: () => setBobKeyHex(keyHex),
+    generateBobKey: () => {
+      setBobChoseOwnKey(true);
+      setBobFormat("hex");
+      setBobDraftState(randomKeyHex());
+    },
+    useAliceKey: () => {
+      setBobChoseOwnKey(false);
+      setBobFormat(keyFormat);
+      setBobDraftState(keyDraft);
+    },
     restoreCipher: () => {
       if (!encrypt) return;
       setTamperedHex(encrypt.ciphertext_hex);
       setTamperedTag(encrypt.tag_hex ?? "");
     },
-    bobUsesAliceKey: normalizeHex(bobKeyHex) === normalizeHex(keyHex),
+    bobUsesAliceKey: Boolean(aliceKeyHex && bobKeyHex && aliceKeyHex === bobKeyHex),
+    bobKeyMismatch: Boolean(encrypt && encryptionKeyHex && bobKeyHex && bobKeyHex !== encryptionKeyHex),
     attacker,
     setAttacker,
     phase,
