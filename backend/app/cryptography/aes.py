@@ -93,12 +93,16 @@ def add_round_key(state: list[list[int]], round_key: bytes) -> list[list[int]]:
 
 
 def _trace_round(block_index: int | None, round_number: int | None) -> bool:
-    """Only the first AES block and rounds 0–1 are expanded in the studio."""
+    """Expand every round of the first block so the studio can animate them.
+
+    Later blocks stay summarized by the mode (CBC, CTR, GCM). ``round_number``
+    is accepted for every round of AES-128 (0 through Nr).
+    """
     if block_index not in (None, 0):
         return False
     if round_number is None:
         return True
-    return round_number <= 1
+    return 0 <= round_number <= NR
 
 
 def _record(
@@ -307,24 +311,6 @@ def encrypt_block(
         intermediates={"round_key": to_hex(round_keys[NR])},
         glossary=["addroundkey"],
     )
-    if trace is not None and block_index in (None, 0):
-        trace.add(
-            operation="AES.remaining",
-            title="Tours 2 à 10 — calculés, non détaillés",
-            explanation=(
-                "AES-128 enchaîne encore neuf tours. Cette simulation ne visualise "
-                "que le tour initial (AddRoundKey) et le premier tour complet. "
-                "Le résultat ci-dessous est pourtant le bloc réellement chiffré."
-            ),
-            code_ref="aes.py:encrypt_block",
-            phase=phase,
-            round_number=NR,
-            block_index=block_index,
-            state_before=None,
-            state_after=state_to_hex(state),
-            intermediates={"ciphertext_block": to_hex(state_to_bytes(state))},
-            glossary=["aes", "block-cipher"],
-        )
     return state_to_bytes(state)
 
 
@@ -336,8 +322,13 @@ def decrypt_block(
     phase: str = "decrypt",
     block_index: int | None = None,
     round_keys: list[bytes] | None = None,
+    detail_rounds: bool = False,
 ) -> bytes:
-    """Decrypt a single 16-byte block with AES-128."""
+    """Decrypt a single 16-byte block with AES-128.
+
+    ``detail_rounds`` records every inverse step (used by AES without a mode).
+    Modes keep a short summary so their own story stays readable.
+    """
     block = require_bytes("block", block, BLOCK_SIZE)
     if round_keys is None:
         round_keys = expand_key(key)
@@ -346,7 +337,45 @@ def decrypt_block(
 
     state = bytes_to_state(block)
     start = clone_state(state)
-    if trace is not None and block_index in (None, 0):
+
+    def note(
+        operation: str,
+        title: str,
+        explanation: str,
+        before: list[list[int]],
+        after: list[list[int]],
+        rnd: int,
+        glossary: list[str],
+        intermediates: dict | None = None,
+    ) -> None:
+        if not detail_rounds:
+            return
+        _record(
+            trace,
+            operation=operation,
+            title=title,
+            explanation=explanation,
+            code_ref="aes.py:decrypt_block",
+            phase=phase,
+            before=before,
+            after=after,
+            round_number=rnd,
+            block_index=block_index,
+            intermediates=intermediates,
+            glossary=glossary,
+        )
+
+    if detail_rounds:
+        note(
+            "AES.input",
+            "État chiffré du bloc",
+            "Le déchiffrement rejoue les tours à l'envers, en commençant par la dernière clé.",
+            state,
+            state,
+            NR,
+            ["aes", "block-cipher"],
+        )
+    elif trace is not None and block_index in (None, 0):
         _record(
             trace,
             operation="AES.input",
@@ -364,18 +393,106 @@ def decrypt_block(
             glossary=["aes", "block-cipher"],
         )
 
+    before = state
     state = add_round_key(state, round_keys[NR])
+    note(
+        "AddRoundKey",
+        "Tour 10 — AddRoundKey",
+        "Le déchiffrement commence par le XOR avec la dernière clé de tour.",
+        before,
+        state,
+        NR,
+        ["addroundkey", "xor"],
+        {"round_key": to_hex(round_keys[NR])},
+    )
+
+    before = state
     state = inv_shift_rows(state)
+    note(
+        "InvShiftRows",
+        "Tour 10 — InvShiftRows",
+        "La ligne r est tournée de r positions vers la droite, pour annuler ShiftRows.",
+        before,
+        state,
+        NR,
+        ["shiftrows"],
+    )
+
+    before = state
     state = inv_sub_bytes(state)
+    note(
+        "InvSubBytes",
+        "Tour 10 — InvSubBytes",
+        "Chaque octet passe par la S-box inverse.",
+        before,
+        state,
+        NR,
+        ["subbytes", "sbox"],
+    )
 
     for rnd in range(NR - 1, 0, -1):
+        before = state
         state = add_round_key(state, round_keys[rnd])
-        state = inv_mix_columns(state)
-        state = inv_shift_rows(state)
-        state = inv_sub_bytes(state)
+        note(
+            "AddRoundKey",
+            f"Tour {rnd} — AddRoundKey",
+            "XOR avec la clé de ce tour, avant d'inverser MixColumns.",
+            before,
+            state,
+            rnd,
+            ["addroundkey", "xor"],
+            {"round_key": to_hex(round_keys[rnd])},
+        )
 
+        before = state
+        state = inv_mix_columns(state)
+        note(
+            "InvMixColumns",
+            f"Tour {rnd} — InvMixColumns",
+            "Chaque colonne est multipliée par la matrice inverse de MixColumns.",
+            before,
+            state,
+            rnd,
+            ["mixcolumns", "gf256"],
+        )
+
+        before = state
+        state = inv_shift_rows(state)
+        note(
+            "InvShiftRows",
+            f"Tour {rnd} — InvShiftRows",
+            "La ligne r revient de r positions vers la droite.",
+            before,
+            state,
+            rnd,
+            ["shiftrows"],
+        )
+
+        before = state
+        state = inv_sub_bytes(state)
+        note(
+            "InvSubBytes",
+            f"Tour {rnd} — InvSubBytes",
+            "Chaque octet passe par la S-box inverse.",
+            before,
+            state,
+            rnd,
+            ["subbytes", "sbox"],
+        )
+
+    before = state
     state = add_round_key(state, round_keys[0])
-    if trace is not None and block_index in (None, 0):
+    note(
+        "AddRoundKey",
+        "Tour 0 — AddRoundKey",
+        "Dernier XOR avec la clé originale : l'état redevient le bloc clair.",
+        before,
+        state,
+        0,
+        ["addroundkey", "xor"],
+        {"round_key": to_hex(round_keys[0])},
+    )
+    if not detail_rounds and trace is not None and block_index in (None, 0):
         trace.add(
             operation="AES.decrypt_summary",
             title="Déchiffrement AES — résultat",

@@ -56,15 +56,26 @@ def test_inverse_transforms() -> None:
     assert add_round_key(add_round_key(state, key), key) == state
 
 
-def test_trace_only_first_round() -> None:
+def test_trace_covers_every_round() -> None:
     from app.cryptography.traces import TraceCollector
 
     trace = TraceCollector()
     encrypt_block(APPENDIX_C_PT, APPENDIX_C_KEY, trace)
     titles = [step["title"] for step in trace.steps]
     assert any(title.startswith("Tour 1 — SubBytes") for title in titles)
-    assert not any(title.startswith(("Tour 2", "Tour 3", "Tour 9", "Tour 10")) for title in titles)
-    assert any("Tours 2 à 10" in title for title in titles)
+    assert any(title.startswith("Tour 5 — MixColumns") for title in titles)
+    assert any(title.startswith("Tour 5 — ShiftRows") for title in titles)
+    assert any(title.startswith("Tour 10 — SubBytes") for title in titles)
+    assert any(title.startswith("Tour 10 — AddRoundKey") for title in titles)
+    assert not any(title.startswith("Tour 10 — MixColumns") for title in titles)
+    assert not any("non détaillés" in title for title in titles)
+    final = [
+        step
+        for step in trace.steps
+        if step["operation"] == "AddRoundKey" and step["round_number"] == 10
+    ][-1]
+    assert final["intermediates"]["after_hex"] == APPENDIX_C_CT.hex()
+    assert final["state_after"][0][0] == "69"
 
 
 def test_state_layout_column_major() -> None:

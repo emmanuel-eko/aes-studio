@@ -1,4 +1,4 @@
-export type Mode = "CBC" | "CTR" | "GCM";
+export type Mode = "CBC" | "CTR" | "GCM" | "BLOC";
 export type Actor = "alice" | "bob" | "oscar";
 export type Phase =
   | "compose"

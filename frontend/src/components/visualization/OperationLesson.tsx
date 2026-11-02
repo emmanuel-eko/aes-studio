@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { CombinedStep, Simulation } from "../../hooks/useSimulation";
 import { formatGrouped, normalizeHex, splitBytes } from "../../lib/hex";
 import type { Mode } from "../../types";
+import { AesRoundStage, isAesRoundOp } from "./AesRoundStage";
 import { StateMatrix } from "./StateMatrix";
 
 function asHex(value: unknown): string | null {
@@ -69,11 +70,13 @@ function TamperImpact({
     .filter((index) => index >= 0);
   if (changed.length === 0) return null;
   const lesson =
-    mode === "CBC"
-      ? "CBC déchiffre quand même. Le bloc qui contient l’octet modifié est brouillé ; le bloc suivant a exactement les mêmes bits inversés. Aucun tag n’arrête Bob."
-      : mode === "CTR"
-        ? "CTR déchiffre quand même. Chaque bit inversé dans le chiffré apparaît au même endroit dans le clair. C’est une modification contrôlée, sans détection."
-        : "GCM refuse de montrer le clair : le tag ne correspond plus. Confidentialité et authentification sont séparées.";
+    mode === "BLOC"
+      ? "AES sans mode ne protège qu’un seul bloc. Un octet modifié rend tout le bloc déchiffré méconnaissable. Aucun tag ne prévient Bob."
+      : mode === "CBC"
+        ? "CBC déchiffre quand même. Le bloc qui contient l’octet modifié est brouillé ; le bloc suivant a exactement les mêmes bits inversés. Aucun tag n’arrête Bob."
+        : mode === "CTR"
+          ? "CTR déchiffre quand même. Chaque bit inversé dans le chiffré apparaît au même endroit dans le clair. C’est une modification contrôlée, sans détection."
+          : "GCM refuse de montrer le clair : le tag ne correspond plus. Confidentialité et authentification sont séparées.";
   return (
     <div className="border border-white/10 p-3">
       <button type="button" className="font-mono text-[10px] tracking-[0.14em] text-well-mute uppercase" onClick={() => setOpen(!open)}>
@@ -200,10 +203,20 @@ export function OperationLesson({ sim, step }: { sim: Simulation; step: Combined
   const chips = useMemo(() => {
     return sim.steps.map((item, index) => ({
       index,
-      label: item.operation.replace(/^[A-Za-z]+\./, ""),
+      label: item.operation === "AES.input" ? "Entrée" : item.operation.replace(/^[A-Za-z]+\./, ""),
       title: item.title,
     }));
   }, [sim.steps]);
+
+  const showRound = Boolean(step && isAesRoundOp(step.operation) && (step.state_after || step.state_before));
+
+  useEffect(() => {
+    document.getElementById(`step-chip-${sim.stepIndex}`)?.scrollIntoView({
+      behavior: "smooth",
+      inline: "nearest",
+      block: "nearest",
+    });
+  }, [sim.stepIndex]);
 
   return (
     <div className="space-y-5">
@@ -212,17 +225,18 @@ export function OperationLesson({ sim, step }: { sim: Simulation; step: Combined
           <p className="mb-2 font-mono text-[10px] tracking-[0.14em] text-well-mute uppercase">
             Étapes — cliquez pour inspecter
           </p>
-          <div className="flex flex-wrap gap-1">
+          <div className="flex gap-1 overflow-x-auto pb-1">
             {chips.map((chip) => (
               <button
                 key={chip.index}
+                id={`step-chip-${chip.index}`}
                 type="button"
                 title={chip.title}
                 onClick={() => {
                   sim.setPlaying(false);
                   sim.setStepIndex(chip.index);
                 }}
-                className={`border px-2 py-1 font-mono text-[10px] uppercase ${
+                className={`shrink-0 border px-2 py-1 font-mono text-[11px] uppercase ${
                   chip.index === sim.stepIndex
                     ? "border-[#c4a36a] text-[#f0d7b8]"
                     : "border-white/10 text-well-mute"
@@ -235,14 +249,18 @@ export function OperationLesson({ sim, step }: { sim: Simulation; step: Combined
         </div>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <div className="space-y-4">
-          <StateMatrix
-            before={step?.state_before}
-            after={step?.state_after}
-            label={step ? `Avant → après · ${step.operation}` : "Matrice 4×4"}
-          />
-        </div>
+      {showRound && step && <AesRoundStage step={step} stepDurationMs={sim.stepDurationMs} />}
+
+      <div className={showRound ? "space-y-4" : "grid gap-6 lg:grid-cols-2"}>
+        {!showRound && (
+          <div className="space-y-4">
+            <StateMatrix
+              before={step?.state_before}
+              after={step?.state_after}
+              label={step ? `Avant → après · ${step.operation}` : "Matrice 4×4"}
+            />
+          </div>
+        )}
         <div className="space-y-4">
           {step && <XorBoard step={step} />}
           {step && <IntermediateList step={step} />}
@@ -262,6 +280,9 @@ export function OperationLesson({ sim, step }: { sim: Simulation; step: Combined
 
 export function formatHint(mode: Mode, index: number | null): string {
   if (index === null) return "Cliquez un octet pour voir l’effet d’une modification.";
+  if (mode === "BLOC") {
+    return `Octet ${index} : sans mode, modifier cet octet brouille tout le bloc au déchiffrement. Pas de tag.`;
+  }
   if (mode === "CBC") {
     return `Octet ${index} : en CBC, le modifier brouille tout le bloc ${Math.floor(index / 16)} et inverse le même bit du bloc suivant. Bob déchiffre quand même.`;
   }

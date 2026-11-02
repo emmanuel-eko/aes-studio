@@ -13,10 +13,15 @@ import { glossary, readSource } from "../services/api";
 import type { GlossaryTerm, Mode, SourceContent } from "../types";
 
 const MODES: { id: Mode; label: string; note: string }[] = [
+  { id: "BLOC", label: "Sans mode", note: "1 bloc, 16 octets" },
   { id: "CBC", label: "CBC", note: "Chaînage + PKCS#7" },
   { id: "CTR", label: "CTR", note: "Flux, sans padding" },
   { id: "GCM", label: "GCM", note: "Confidentialité + tag" },
 ];
+
+function cipherTitle(mode: Mode): string {
+  return mode === "BLOC" ? "AES-128" : `AES-128-${mode}`;
+}
 
 export function Studio() {
   const sim = useSimulation();
@@ -45,7 +50,7 @@ export function Studio() {
       items.push({
         id: "sent",
         from: "alice",
-        body: `AES-128-${sim.mode}\n${formatGrouped(sim.encrypt.ciphertext_hex, 2)}`,
+        body: `${cipherTitle(sim.mode)}\n${formatGrouped(sim.encrypt.ciphertext_hex, 2)}`,
         meta: "envoyé",
       });
     }
@@ -113,7 +118,7 @@ export function Studio() {
               type="button"
               onClick={() => setTab(id)}
               className={`min-h-11 flex-1 border px-2 font-mono text-[11px] uppercase ${
-                tab === id ? "border-ink bg-ink text-chalk" : "border-rule"
+                tab === id ? "border-ink bg-ink text-paper" : "border-rule"
               }`}
             >
               {id}
@@ -138,7 +143,7 @@ export function Studio() {
         <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="font-mono text-[10px] tracking-[0.16em] text-ink-soft uppercase">
-              Trace réelle · {sim.mode}
+              Trace réelle · {sim.mode === "BLOC" ? "AES-128, sans mode" : sim.mode}
             </p>
             <h2 className="font-display text-2xl leading-tight md:text-3xl md:leading-none">
               {sim.current?.title ?? "En attente d’une simulation"}
@@ -203,20 +208,47 @@ function AliceColumn({ sim, bubbles }: { sim: Simulation; bubbles: Bubble[] }) {
       )}
       <label className="block">
         <span className="font-mono text-[10px] tracking-[0.14em] text-ink-soft uppercase">
-          Message pour Bob
+          {sim.mode === "BLOC" ? "Message pour Bob · exactement 16 octets" : "Message pour Bob"}
         </span>
         <textarea
           value={sim.message}
           onChange={(event) => sim.setMessage(event.target.value)}
           rows={4}
+          spellCheck={sim.mode === "BLOC" && sim.messageFormat === "hex" ? false : undefined}
           className="mt-1 w-full border border-rule bg-transparent px-3 py-2 outline-none"
         />
       </label>
+      {sim.mode === "BLOC" && (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p
+            className={`font-mono text-xl ${sim.messageByteLength === 16 ? "text-bob" : "text-danger"}`}
+            aria-live="polite"
+          >
+            {sim.messageByteLength === null
+              ? "Hexadécimal invalide"
+              : `${sim.messageByteLength} / 16 octets`}
+          </p>
+          <div className="flex gap-2">
+            {(["texte", "hex"] as const).map((format) => (
+              <button
+                key={format}
+                type="button"
+                onClick={() => sim.setMessageFormat(format)}
+                className={`border px-3 py-1 font-mono text-[11px] uppercase ${
+                  sim.messageFormat === format ? "border-ink bg-paper-2" : "border-rule text-ink-soft"
+                }`}
+              >
+                {format === "texte" ? "Texte" : "Hexadécimal"}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <fieldset>
         <legend className="font-mono text-[10px] tracking-[0.14em] text-ink-soft uppercase">
-          AES-128 · mode
+          AES-128
         </legend>
-        <div className="mt-2 grid grid-cols-3 gap-2">
+        <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-4">
           {MODES.map((item) => (
             <button
               key={item.id}
@@ -232,6 +264,17 @@ function AliceColumn({ sim, bubbles }: { sim: Simulation; bubbles: Bubble[] }) {
           ))}
         </div>
       </fieldset>
+      {sim.mode === "BLOC" && (
+        <p className="text-sm text-ink-soft">
+          Un seul bloc AES-128 : pas de mode d’opération, pas de vecteur d’initialisation, pas de remplissage.
+          Le message doit faire exactement 16 octets — par exemple « Bonjour classe ! ».
+        </p>
+      )}
+      {sim.error && (
+        <p role="alert" className="border border-danger px-3 py-2 text-sm text-danger">
+          {sim.error}
+        </p>
+      )}
       {sim.mode === "GCM" && (
         <label className="block">
           <span className="font-mono text-[10px] tracking-[0.14em] text-ink-soft uppercase">
@@ -245,7 +288,6 @@ function AliceColumn({ sim, bubbles }: { sim: Simulation; bubbles: Bubble[] }) {
         </label>
       )}
       <ParamFields sim={sim} />
-      {sim.error && <p className="text-sm text-danger">{sim.error}</p>}
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
@@ -255,6 +297,15 @@ function AliceColumn({ sim, bubbles }: { sim: Simulation; bubbles: Bubble[] }) {
         >
           {sim.busy ? "Calcul…" : "Chiffrer et envoyer"}
         </button>
+        {sim.mode === "BLOC" && (
+          <button
+            type="button"
+            onClick={sim.loadFips}
+            className="min-h-11 w-full border border-rule px-4 py-2 text-sm sm:w-auto"
+          >
+            Vecteur FIPS-197
+          </button>
+        )}
         <button type="button" onClick={() => sim.resetTrace()} className="min-h-11 w-full border border-rule px-4 py-2 text-sm sm:w-auto">
           Nouveau brouillon
         </button>
@@ -491,11 +542,13 @@ function RecoveredMessage({
 
 function TamperLesson({ mode, modified }: { mode: Mode; modified: boolean }) {
   const text =
-    mode === "CBC"
-      ? "CBC : un octet modifié brouille un bloc et déplace des bits dans le suivant. Aucun tag ne signale la fraude."
-      : mode === "CTR"
-        ? "CTR : le bit inversé dans le chiffré apparaît au même endroit dans le clair. L’intégrité n’est pas protégée."
-        : "GCM : toute modification du chiffré, de l’AAD ou du tag doit faire échouer la vérification. Bob ne voit pas le clair.";
+    mode === "BLOC"
+      ? "AES sans mode : un seul bloc. Modifier un octet rend tout le bloc déchiffré illisible. Il n’y a ni chaînage, ni tag."
+      : mode === "CBC"
+        ? "CBC : un octet modifié brouille un bloc et déplace des bits dans le suivant. Aucun tag ne signale la fraude."
+        : mode === "CTR"
+          ? "CTR : le bit inversé dans le chiffré apparaît au même endroit dans le clair. L’intégrité n’est pas protégée."
+          : "GCM : toute modification du chiffré, de l’AAD ou du tag doit faire échouer la vérification. Bob ne voit pas le clair.";
   return (
     <p className="text-sm text-ink-soft">
       {modified ? "Modification en cours. " : ""}
@@ -517,7 +570,7 @@ function BobColumn({ sim, bubbles }: { sim: Simulation; bubbles: Bubble[] }) {
         <p className="font-mono text-[10px] tracking-[0.14em] text-ink-soft uppercase">
           Paramètres de réception
         </p>
-        <p>Algorithme : AES-128 / {sim.mode}</p>
+        <p>Algorithme : {cipherTitle(sim.mode)}{sim.mode === "BLOC" ? " · sans mode" : ""}</p>
         {sim.mode === "CBC" && <p className="break-all font-mono text-[12px]">IV {sim.ivHex}</p>}
         {sim.mode === "CTR" && <p className="break-all font-mono text-[12px]">CTR {sim.counterHex}</p>}
         {sim.mode === "GCM" && <p className="break-all font-mono text-[12px]">Nonce {sim.nonceHex}</p>}

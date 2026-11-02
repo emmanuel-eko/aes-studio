@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-Mode = Literal["CBC", "CTR", "GCM"]
+Mode = Literal["CBC", "CTR", "GCM", "BLOC"]
 
 
 class GenerateParamsRequest(BaseModel):
@@ -22,7 +22,8 @@ class GenerateParamsResponse(BaseModel):
 
 
 class EncryptRequest(BaseModel):
-    plaintext: str = Field(max_length=512)
+    plaintext: str = Field(default="", max_length=512)
+    plaintext_hex: str | None = None
     mode: Mode
     key_hex: str
     iv_hex: str | None = None
